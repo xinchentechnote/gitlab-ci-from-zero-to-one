@@ -1,0 +1,57 @@
+name: gitlab
+
+networks:
+  gitlab-net:
+    name: ${GITLAB_NETWORK:-gitlab-net}
+    driver: bridge
+
+services:
+  gitlab:
+    image: ${GITLAB_IMAGE:-gitlab/gitlab-ce:latest}
+    container_name: gitlab
+    restart: unless-stopped
+    hostname: ${GITLAB_HOST:-gitlab.127.0.0.1.nip.io}
+    environment:
+      GITLAB_OMNIBUS_CONFIG: |
+        external_url 'http://${GITLAB_HOST:-gitlab.127.0.0.1.nip.io}:${GITLAB_PORT:-8929}'
+        gitlab_rails['gitlab_shell_ssh_port'] = ${GITLAB_SSH_PORT:-2224}
+        puma['worker_processes'] = 2
+        sidekiq['max_concurrency'] = 10
+        prometheus['enable'] = false
+        prometheus_monitoring['enable'] = false
+        alertmanager['enable'] = false
+        postgres_exporter['enable'] = false
+        redis_exporter['enable'] = false
+        gitlab_exporter['enable'] = false
+    networks:
+      gitlab-net:
+        aliases:
+          - ${GITLAB_HOST:-gitlab.127.0.0.1.nip.io}
+    ports:
+      - "${GITLAB_PORT:-8929}:${GITLAB_PORT:-8929}"
+      - "${GITLAB_SSH_PORT:-2224}:22"
+    volumes:
+      - ${GITLAB_DIR:-$HOME/gitlab-docker}/config:/etc/gitlab
+      - ${GITLAB_DIR:-$HOME/gitlab-docker}/logs:/var/log/gitlab
+      - ${GITLAB_DIR:-$HOME/gitlab-docker}/data:/var/opt/gitlab
+    shm_size: 256m
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/gitlab/bin/gitlab-healthcheck --fail --max-time 10 || exit 1"]
+      interval: 30s
+      timeout: 30s
+      retries: 40
+      start_period: 300s
+
+  gitlab-runner:
+    image: ${RUNNER_IMAGE:-gitlab/gitlab-runner:latest}
+    container_name: gitlab-runner
+    restart: unless-stopped
+    depends_on:
+      - gitlab
+    networks:
+      gitlab-net:
+        aliases:
+          - gitlab-runner
+    volumes:
+      - ${GITLAB_DIR:-$HOME/gitlab-docker}/runner-config:/etc/gitlab-runner
+      - /var/run/docker.sock:/var/run/docker.sock

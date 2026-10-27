@@ -1,0 +1,8 @@
+[package]
+name = "rust-hello"
+version = "0.2.0"
+edition = "2021"
+
+# No dependencies on purpose: the CI jobs then build with --offline and never
+# need crates.io.
+[dependencies]

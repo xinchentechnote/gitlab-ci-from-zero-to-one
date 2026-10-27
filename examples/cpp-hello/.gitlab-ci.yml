@@ -1,0 +1,89 @@
+stages:
+  - build
+  - test
+  - verify
+  - deploy
+  - release
+
+variables:
+  # Bump together with project(... VERSION ...) in CMakeLists.txt; build checks it.
+  APP_VERSION: "0.1.0"
+
+workflow:
+  rules:
+    # The release keyword creates a tag, and a tag would otherwise start a second pipeline.
+    - if: $CI_COMMIT_TAG
+      when: never
+    - if: $CI_COMMIT_BRANCH == "main"
+
+default:
+  # Local-only image: gcc 9.4 + cmake 3.16.3 + ninja, nothing to download. It has no
+  # registry counterpart, so the runner must be allowed to use a present image.
+  image: linux-dev:ubuntu20
+  tags:
+    - mac
+
+build:
+  stage: build
+  script:
+    - grep -q "project(cpp-hello VERSION ${APP_VERSION}" CMakeLists.txt
+    - cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+    - cmake --build build --parallel
+  artifacts:
+    paths:
+      - build/cpp-hello
+    # A rollback re-runs the old deploy job, which needs this pipeline's artifacts.
+    expire_in: 1 week
+
+test:
+  stage: test
+  script:
+    # Fresh container, so ctest needs its own build tree; a hello world costs ~2 s.
+    - cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+    - cmake --build build --parallel
+    - sh -c 'cd build && ctest --output-on-failure'
+
+verify:
+  stage: verify
+  needs:
+    - job: build
+      artifacts: true
+  script:
+    - ./build/cpp-hello verify
+
+deploy:staging:
+  stage: deploy
+  needs:
+    - job: build
+      artifacts: true
+  environment:
+    name: staging
+  script:
+    - ./build/cpp-hello staging
+
+deploy:production:
+  stage: deploy
+  when: manual
+  allow_failure: false
+  resource_group: production
+  needs:
+    - job: build
+      artifacts: true
+    - job: deploy:staging
+  environment:
+    name: production
+  script:
+    - ./build/cpp-hello production
+
+# release-cli has to live inside the job image, so this cannot run in the compiler image.
+release:
+  stage: release
+  image: registry.gitlab.com/gitlab-org/release-cli:latest
+  needs:
+    - job: deploy:production
+  script:
+    - echo "released cpp-hello v${APP_VERSION}"
+  release:
+    tag_name: v${APP_VERSION}
+    name: cpp-hello v${APP_VERSION}
+    description: "Deployed from pipeline ${CI_PIPELINE_ID} of ${CI_COMMIT_SHORT_SHA}."

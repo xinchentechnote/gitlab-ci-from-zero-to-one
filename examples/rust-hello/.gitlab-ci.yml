@@ -1,0 +1,94 @@
+stages:
+  - build
+  - test
+  - verify
+  - deploy
+  - release
+
+variables:
+  CARGO_HOME: "${CI_PROJECT_DIR}/.cargo"
+  CARGO_TARGET_DIR: "${CI_PROJECT_DIR}/target"
+  # Bump this together with [package] version in Cargo.toml; build checks it.
+  APP_VERSION: "0.2.0"
+
+workflow:
+  rules:
+    # The release keyword creates a tag, and a tag would otherwise start a second pipeline.
+    - if: $CI_COMMIT_TAG
+      when: never
+    - if: $CI_COMMIT_BRANCH == "main"
+
+default:
+  # Already local (1.13 GB, arm64). This runner ships allowed_pull_policies=[always],
+  # so a job-level pull_policy is rejected; only the runner config can change it.
+  image: rust:1.92-slim
+  tags:
+    - mac
+  cache:
+    key: rust-1.92-slim
+    paths:
+      - .cargo/registry/
+      - target/
+
+build:
+  stage: build
+  script:
+    - grep -q "^version = \"${APP_VERSION}\"" Cargo.toml
+    - cargo build --release --offline --locked
+    - ./target/release/rust-hello
+  artifacts:
+    paths:
+      - target/release/rust-hello
+    # A rollback re-runs the old deploy job, which needs this pipeline's artifacts.
+    expire_in: 1 week
+
+test:
+  stage: test
+  script:
+    - cargo test --release --offline --locked
+
+verify:
+  stage: verify
+  needs:
+    - job: build
+      artifacts: true
+  script:
+    - ./target/release/rust-hello verify
+
+deploy:staging:
+  stage: deploy
+  needs:
+    - job: build
+      artifacts: true
+  environment:
+    name: staging
+  script:
+    - ./target/release/rust-hello staging
+
+deploy:production:
+  stage: deploy
+  # allow_failure: false keeps the pipeline 'blocked' until this is clicked.
+  when: manual
+  allow_failure: false
+  resource_group: production
+  needs:
+    - job: build
+      artifacts: true
+    - job: deploy:staging
+  environment:
+    name: production
+  script:
+    - ./target/release/rust-hello production
+
+# release-cli has to live inside the job image, so this cannot run in rust:1.92-slim.
+release:
+  stage: release
+  image: registry.gitlab.com/gitlab-org/release-cli:latest
+  needs:
+    - job: deploy:production
+  script:
+    - echo "released rust-hello v${APP_VERSION}"
+  release:
+    tag_name: v${APP_VERSION}
+    name: rust-hello v${APP_VERSION}
+    description: "Deployed from pipeline ${CI_PIPELINE_ID} of ${CI_COMMIT_SHORT_SHA}."

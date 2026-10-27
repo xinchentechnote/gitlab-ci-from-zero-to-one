@@ -1,0 +1,90 @@
+stages:
+  - build
+  - test
+  - verify
+  - deploy
+  - release
+
+variables:
+  # Bump together with <version> in pom.xml; build checks it.
+  APP_VERSION: "0.1.0"
+  # Keep the repository inside the project so the runner can cache it.
+  MAVEN_REPO: "${CI_PROJECT_DIR}/.m2/repository"
+
+workflow:
+  rules:
+    # The release keyword creates a tag, and a tag would otherwise start a second pipeline.
+    - if: $CI_COMMIT_TAG
+      when: never
+    - if: $CI_COMMIT_BRANCH == "main"
+
+default:
+  image: maven:3.9-eclipse-temurin-17
+  tags:
+    - mac
+  cache:
+    key: maven-3.9-temurin17
+    paths:
+      - .m2/repository/
+
+build:
+  stage: build
+  script:
+    - grep -q "<version>${APP_VERSION}</version>" pom.xml
+    - mvn -B -s ci/settings.xml -Dmaven.repo.local="${MAVEN_REPO}" -DskipTests package
+  artifacts:
+    paths:
+      - target/java-hello-${APP_VERSION}.jar
+    # A rollback re-runs the old deploy job, which needs this pipeline's artifacts.
+    expire_in: 1 week
+
+test:
+  stage: test
+  script:
+    - mvn -B -s ci/settings.xml -Dmaven.repo.local="${MAVEN_REPO}" test
+
+verify:
+  stage: verify
+  needs:
+    - job: build
+      artifacts: true
+  script:
+    - java -jar "target/java-hello-${APP_VERSION}.jar" verify
+
+deploy:staging:
+  stage: deploy
+  needs:
+    - job: build
+      artifacts: true
+  environment:
+    name: staging
+  script:
+    - java -jar "target/java-hello-${APP_VERSION}.jar" staging
+
+deploy:production:
+  stage: deploy
+  # allow_failure: false keeps the pipeline 'blocked' until this is clicked.
+  when: manual
+  allow_failure: false
+  resource_group: production
+  needs:
+    - job: build
+      artifacts: true
+    - job: deploy:staging
+  environment:
+    name: production
+  script:
+    - java -jar "target/java-hello-${APP_VERSION}.jar" production
+
+# release-cli has to live inside the job image, so this cannot run in the Maven image.
+release:
+  stage: release
+  image: registry.gitlab.com/gitlab-org/release-cli:latest
+  needs:
+    - job: deploy:production
+  script:
+    - echo "released java-hello v${APP_VERSION}"
+  release:
+    tag_name: v${APP_VERSION}
+    name: java-hello v${APP_VERSION}
+    description: "Deployed from pipeline ${CI_PIPELINE_ID} of ${CI_COMMIT_SHORT_SHA}."
